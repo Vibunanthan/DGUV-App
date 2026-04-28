@@ -1,0 +1,13 @@
+# Datenbank-Dateien (lokal, nicht ins Repo)
+geraete.json
+pruefungen.json
+
+# Node
+node_modules/
+
+# Systemdateien
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

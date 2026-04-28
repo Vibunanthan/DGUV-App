@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>DGUV V3 Prüfprotokoll</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo">DGUV V3 <span>Prüfprotokoll</span></div>
+  <div class="conn" id="conn-status"></div>
+</div>
+
+<div class="nav">
+  <button class="tab active" id="tab-pruefen"  onclick="showTab('pruefen')">Prüfen</button>
+  <button class="tab"        id="tab-geraete"  onclick="showTab('geraete')">Geräte</button>
+  <button class="tab"        id="tab-archiv"   onclick="showTab('archiv')">Archiv</button>
+</div>
+
+<div class="wrap">
+
+  <!-- ── PRÜFEN ── -->
+  <div class="page active" id="page-pruefen">
+
+    <!-- Step 1: Gerät suchen -->
+    <div id="pruef-step1">
+      <div class="card">
+        <div class="card-title">Gerät aufrufen</div>
+        <div class="search-bar">
+          <input type="text" id="inv-input" placeholder="Inventar-Nr. eingeben…"
+                 oninput="searchGeraet(this.value)" autocomplete="off"/>
+          <button class="btn" onclick="openQR()">📷 QR</button>
+        </div>
+        <div id="geraet-suggestions"></div>
+      </div>
+      <div class="empty" id="pruef-hint">
+        <div class="icon">🔍</div>Inventar-Nr. eingeben oder QR-Code scannen
+      </div>
+    </div>
+
+    <!-- Step 2: Prüfformular -->
+    <div id="pruef-step2" style="display:none">
+      <div class="geraet-kopf" id="geraet-kopf"></div>
+      <div class="step-indicator">
+        <div class="step-dot" id="sd1"></div>
+        <div class="step-dot" id="sd2"></div>
+        <div class="step-dot" id="sd3"></div>
+        <div class="step-dot" id="sd4"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Sichtprüfung</div>
+        <div id="sicht-checks"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Messung</div>
+        <div class="mess-header">
+          <span>Prüfpunkt</span>
+          <span style="text-align:center">Messwert</span>
+          <span style="text-align:center">i.O.</span>
+          <span style="text-align:center">n.i.O.</span>
+        </div>
+        <div id="mess-checks"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Ergebnis</div>
+        <div class="result-row" onclick="toggleR('r1')">
+          <input type="checkbox" id="r1">
+          <label for="r1">Keine Mängel festgestellt</label>
+        </div>
+        <div class="result-row" onclick="toggleR('r2')">
+          <input type="checkbox" id="r2">
+          <label for="r2">Mängel wurden durch Reparatur beseitigt</label>
+        </div>
+        <div class="result-row" onclick="toggleR('r3')">
+          <input type="checkbox" id="r3">
+          <label for="r3">Auf festgestellte Mängel hingewiesen</label>
+        </div>
+        <div class="result-row" onclick="toggleR('r4')">
+          <input type="checkbox" id="r4">
+          <label for="r4">Gerät darf nicht weiterverwendet werden ⚠️</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Prüfer & Messgerät</div>
+        <div class="fg">
+          <div class="f"><label>Prüfer</label><input id="pruefer" placeholder="Name"/></div>
+          <div class="f"><label>Prüfdatum</label><input type="date" id="pruefdatum"/></div>
+          <div class="f"><label>Messgerät Typ</label><input id="mess-typ" placeholder="z.B. Metrel MI 3309"/></div>
+          <div class="f"><label>Messgerät Fabrikat</label><input id="mess-fab"/></div>
+          <div class="f"><label>Nächste Prüfung</label><input type="date" id="naechste"/></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Bemerkungen</div>
+        <div class="f"><textarea id="bemerkungen" placeholder="Freitext…"></textarea></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Unterschrift Prüfer</div>
+        <canvas id="sig-canvas"></canvas>
+        <p class="sig-hint">Mit Finger oder Apple Pencil unterschreiben</p>
+        <div style="margin-top:8px">
+          <button class="btn sm" onclick="clearSig()">Löschen</button>
+        </div>
+      </div>
+
+      <div id="save-status"></div>
+      <div class="btn-row">
+        <button class="btn" onclick="resetPruefung()">Abbrechen</button>
+        <button class="btn primary" id="btn-save" onclick="savePruefung()">Speichern →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── GERÄTE ── -->
+  <div class="page" id="page-geraete">
+    <div class="search-bar">
+      <input type="text" id="geraete-search" placeholder="Suchen…" oninput="renderGeraete()"/>
+      <button class="btn primary" onclick="openNeuGeraet()">+ Neu</button>
+    </div>
+    <div id="geraete-list"></div>
+  </div>
+
+  <!-- ── ARCHIV ── -->
+  <div class="page" id="page-archiv">
+    <div class="stat-row">
+      <div class="stat"><div class="n" id="s-total">–</div><div class="l">Prüfungen</div></div>
+      <div class="stat"><div class="n" id="s-ok" style="color:var(--ok)">–</div><div class="l">Bestanden</div></div>
+      <div class="stat"><div class="n" id="s-nok" style="color:var(--nok)">–</div><div class="l">Mängel</div></div>
+    </div>
+    <div id="archiv-list"></div>
+  </div>
+
+</div>
+
+<!-- ── Modal: Gerät Detail ── -->
+<div class="modal-overlay" id="geraet-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-geraet-title">Gerät</div>
+      <button class="modal-close" onclick="closeModal('geraet-modal')">✕</button>
+    </div>
+    <div id="modal-geraet-body"></div>
+  </div>
+</div>
+
+<!-- ── Modal: Neues Gerät ── -->
+<div class="modal-overlay" id="neu-geraet-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Neues Gerät anlegen</div>
+      <button class="modal-close" onclick="closeModal('neu-geraet-modal')">✕</button>
+    </div>
+    <div class="fg" style="margin-bottom:10px">
+      <div class="f"><label>Inventar-Nr. *</label><input id="ng-inv" placeholder="z.B. INV-0042"/></div>
+      <div class="f"><label>Typ / Modell *</label><input id="ng-typ" placeholder="z.B. DD-200"/></div>
+      <div class="f"><label>Hersteller</label><input id="ng-hersteller" placeholder="z.B. Hilti"/></div>
+      <div class="f"><label>Seriennummer</label><input id="ng-sn"/></div>
+      <div class="f">
+        <label>Schutzklasse</label>
+        <select id="ng-sk">
+          <option value="">—</option>
+          <option>I</option><option>II</option><option>III</option>
+        </select>
+      </div>
+      <div class="f"><label>Nennspannung</label><input id="ng-spannung" placeholder="230 V"/></div>
+      <div class="f"><label>Nennstrom</label><input id="ng-strom" placeholder="12,3 A"/></div>
+      <div class="f"><label>Nennleistung</label><input id="ng-leistung" placeholder="2600 W"/></div>
+      <div class="f"><label>Standort</label><input id="ng-standort" placeholder="z.B. Halle 3"/></div>
+      <div class="f"><label>Abteilung</label><input id="ng-abt"/></div>
+      <div class="f"><label>Besitzer</label><input id="ng-besitzer" placeholder="z.B. Max Mustermann"/></div>
+    </div>
+    <div id="ng-status" style="font-size:13px;margin-bottom:8px"></div>
+    <div class="btn-row">
+      <button class="btn" onclick="closeModal('neu-geraet-modal')">Abbrechen</button>
+      <button class="btn primary" id="btn-ng" onclick="saveNeuesGeraet()">Gerät anlegen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── QR Scanner ── -->
+<div id="qr-overlay">
+  <video id="qr-video" playsinline autoplay></video>
+  <canvas id="qr-canvas"></canvas>
+  <div class="qr-frame"></div>
+  <p class="qr-hint">QR-Code vor die Kamera halten</p>
+  <button class="btn" onclick="closeQR()"
+          style="margin-top:1.5rem;color:#fff;border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.1)">
+    Abbrechen
+  </button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+</body>
+</html>
