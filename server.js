@@ -4,7 +4,7 @@ const path = require('path');
 const url  = require('url');
 
 const PORT   = 3000;
-const PUBLIC = path.join(__dirname, 'public');
+const PUBLIC = path.join(__dirname, 'docs');
 const G_FILE = path.join(__dirname, 'geraete.json');
 const P_FILE = path.join(__dirname, 'pruefungen.json');
 
