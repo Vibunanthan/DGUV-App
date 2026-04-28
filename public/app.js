@@ -1,4 +1,4 @@
-// ── Stammdaten ───────────────────────────────────────────────────────────────
+// ── Stammdaten ────────────────────────────────────────────────────────────────
 const SICHT_ITEMS = [
   'Isolierungen',
   'Auswahl und Anwendung von Leitungen und Steckern',
@@ -26,21 +26,88 @@ const MESS_ITEMS = [
   { label: 'Berührungsstrom',                              unit: 'mA' },
 ];
 
-// ── API helpers ───────────────────────────────────────────────────────────────
-async function apiGet(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+// ── File System Storage ───────────────────────────────────────────────────────
+let dirHandle = null;
+let DB = { geraete: [], pruefungen: [] };
+
+async function openFolder() {
+  if (!('showDirectoryPicker' in window)) {
+    document.getElementById('startup-no-support').style.display = 'block';
+    return;
+  }
+  const errEl = document.getElementById('startup-error');
+  const btn   = document.getElementById('btn-open-folder');
+  errEl.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Wird geöffnet…';
+
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await loadDB();
+    showApp();
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      errEl.textContent = 'Fehler: ' + e.message;
+    }
+  }
+  btn.disabled = false;
+  btn.innerHTML = '📁 Ordner auswählen';
 }
 
-async function apiPost(path, body) {
-  const r = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+async function changeFolder() {
+  dirHandle = null;
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('startup-overlay').style.display = 'flex';
+  document.getElementById('startup-error').textContent = '';
+}
+
+async function loadDB() {
+  DB.geraete    = await readJSON('geraete.json');
+  DB.pruefungen = await readJSON('pruefungen.json');
+}
+
+async function readJSON(filename) {
+  try {
+    const fh   = await dirHandle.getFileHandle(filename, { create: true });
+    const file = await fh.getFile();
+    const text = await file.text();
+    return text.trim() ? JSON.parse(text) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeJSON(filename, data) {
+  const fh       = await dirHandle.getFileHandle(filename, { create: true });
+  const writable = await fh.createWritable();
+  await writable.write(JSON.stringify(data, null, 2));
+  await writable.close();
+}
+
+async function saveDB() {
+  if (!dirHandle) return;
+  const btn = document.getElementById('btn-save-db');
+  btn.disabled = true;
+  try {
+    await writeJSON('geraete.json',    DB.geraete);
+    await writeJSON('pruefungen.json', DB.pruefungen);
+    toast('Gespeichert ✓');
+  } catch (e) {
+    toast('Fehler beim Speichern: ' + e.message);
+  }
+  btn.disabled = false;
+}
+
+function showApp() {
+  document.getElementById('startup-overlay').style.display = 'none';
+  document.getElementById('main-app').style.display = 'block';
+  document.getElementById('folder-name').textContent = dirHandle.name;
+  document.getElementById('pruefdatum').value = today();
+  renderGeraete();
+}
+
+function nextId(arr) {
+  return arr.length ? Math.max(...arr.map(x => x.id || 0)) + 1 : 1;
 }
 
 // ── Nav ───────────────────────────────────────────────────────────────────────
@@ -57,23 +124,15 @@ function showTab(name) {
 let activeGeraet = null;
 let sichtState   = {};
 let messState    = {};
-let geraeteCache = null;
 
-async function loadGeraete() {
-  if (geraeteCache) return geraeteCache;
-  geraeteCache = await apiGet('/api/geraete');
-  return geraeteCache;
-}
-
-async function searchGeraet(q) {
+function searchGeraet(q) {
   const sug  = document.getElementById('geraet-suggestions');
   const hint = document.getElementById('pruef-hint');
   if (!q.trim()) { sug.innerHTML = ''; hint.style.display = ''; return; }
   hint.style.display = 'none';
 
-  const all  = await loadGeraete();
   const ql   = q.toLowerCase();
-  const hits = all.filter(g =>
+  const hits = DB.geraete.filter(g =>
     (g.inventarNr || '').toLowerCase().includes(ql) ||
     (g.typ        || '').toLowerCase().includes(ql)
   ).slice(0, 5);
@@ -85,7 +144,6 @@ async function searchGeraet(q) {
     </div>`;
     return;
   }
-
   sug.innerHTML = hits.map(g => `
     <div class="list-item" onclick="startPruefung('${esc(g.inventarNr)}')">
       <div class="list-icon">🔧</div>
@@ -98,10 +156,9 @@ async function searchGeraet(q) {
 }
 
 function startPruefung(invNr) {
-  const g = (geraeteCache || []).find(x => x.inventarNr === invNr);
+  const g = DB.geraete.find(x => x.inventarNr === invNr);
   if (!g) return;
   activeGeraet = g;
-
   document.getElementById('pruef-step1').style.display = 'none';
   document.getElementById('pruef-step2').style.display = 'block';
   document.getElementById('geraet-kopf').innerHTML = `
@@ -135,7 +192,6 @@ function resetPruefung() {
 
 function buildChecks() {
   sichtState = {}; messState = {};
-
   const sc = document.getElementById('sicht-checks');
   sc.innerHTML = '';
   SICHT_ITEMS.forEach((item, i) => {
@@ -181,19 +237,16 @@ function setCheck(type, i, val) {
   updateSteps();
 }
 
-function toggleR(id) {
-  const el = document.getElementById(id);
-  el.checked = !el.checked;
-}
+function toggleR(id) { document.getElementById(id).checked = !document.getElementById(id).checked; }
 
 function updateSteps() {
   const sd = Object.values(sichtState).filter(v => v !== null).length;
   const md = Object.values(messState).filter(v => v.result !== null).length;
   ['sd1','sd2','sd3','sd4'].forEach(id => document.getElementById(id).className = 'step-dot');
-  if (sd > 0)                       document.getElementById('sd1').className = 'step-dot done';
-  if (sd === SICHT_ITEMS.length)    document.getElementById('sd2').className = 'step-dot done';
-  if (md > 0)                       document.getElementById('sd3').className = 'step-dot done';
-  if (md === MESS_ITEMS.length)     document.getElementById('sd4').className = 'step-dot done';
+  if (sd > 0)                    document.getElementById('sd1').className = 'step-dot done';
+  if (sd === SICHT_ITEMS.length) document.getElementById('sd2').className = 'step-dot done';
+  if (md > 0)                    document.getElementById('sd3').className = 'step-dot done';
+  if (md === MESS_ITEMS.length)  document.getElementById('sd4').className = 'step-dot done';
 }
 
 async function savePruefung() {
@@ -203,55 +256,48 @@ async function savePruefung() {
 
   const btn = document.getElementById('btn-save');
   btn.disabled = true; btn.textContent = 'Wird gespeichert…';
-  document.getElementById('save-status').innerHTML =
-    '<div class="loading"><div class="spinner"></div>Speichere…</div>';
 
   const hasMangel =
     Object.values(sichtState).some(v => v === 'nok') ||
     Object.values(messState).some(v => v.result === 'nok');
 
-  try {
-    await apiPost('/api/pruefungen', {
-      geraetInventarNr:   activeGeraet.inventarNr,
-      geraetLabel:        `${activeGeraet.typ} — Inv. ${activeGeraet.inventarNr || '?'}`,
-      datum:              document.getElementById('pruefdatum').value,
-      pruefer,
-      gesamtergebnis:     hasMangel ? 'nok' : 'ok',
-      sichtJSON:          JSON.stringify(sichtState),
-      messJSON:           JSON.stringify(messState),
-      ergebnisJSON:       JSON.stringify({
-                            r1: document.getElementById('r1').checked,
-                            r2: document.getElementById('r2').checked,
-                            r3: document.getElementById('r3').checked,
-                            r4: document.getElementById('r4').checked,
-                          }),
-      bemerkungen:        document.getElementById('bemerkungen').value,
-      unterschrift:       document.getElementById('sig-canvas').toDataURL(),
-      messgeraetTyp:      document.getElementById('mess-typ').value,
-      messgeraetFabrikat: document.getElementById('mess-fab').value,
-      naechstePruefung:   document.getElementById('naechste').value,
-    });
-    document.getElementById('save-status').innerHTML = '';
-    toast('Prüfung gespeichert ✓');
-    setTimeout(resetPruefung, 900);
-  } catch (e) {
-    document.getElementById('save-status').innerHTML =
-      `<div class="info-box err">Fehler beim Speichern: ${e.message}</div>`;
-  }
+  const neu = {
+    id:                 nextId(DB.pruefungen),
+    geraetInventarNr:   activeGeraet.inventarNr,
+    geraetLabel:        `${activeGeraet.typ} — Inv. ${activeGeraet.inventarNr || '?'}`,
+    datum:              document.getElementById('pruefdatum').value,
+    pruefer,
+    gesamtergebnis:     hasMangel ? 'nok' : 'ok',
+    sichtJSON:          JSON.stringify(sichtState),
+    messJSON:           JSON.stringify(messState),
+    ergebnisJSON:       JSON.stringify({
+                          r1: document.getElementById('r1').checked,
+                          r2: document.getElementById('r2').checked,
+                          r3: document.getElementById('r3').checked,
+                          r4: document.getElementById('r4').checked,
+                        }),
+    bemerkungen:        document.getElementById('bemerkungen').value,
+    unterschrift:       document.getElementById('sig-canvas').toDataURL(),
+    messgeraetTyp:      document.getElementById('mess-typ').value,
+    messgeraetFabrikat: document.getElementById('mess-fab').value,
+    naechstePruefung:   document.getElementById('naechste').value,
+    created_at:         new Date().toISOString(),
+  };
 
+  DB.pruefungen.unshift(neu);
+  await saveDB();
+  document.getElementById('save-status').innerHTML = '';
   btn.disabled = false; btn.textContent = 'Speichern →';
+  setTimeout(resetPruefung, 800);
 }
 
 // ── Geräte ────────────────────────────────────────────────────────────────────
-async function renderGeraete() {
-  const q    = (document.getElementById('geraete-search').value || '').toLowerCase();
+function renderGeraete() {
+  const q    = (document.getElementById('geraete-search')?.value || '').toLowerCase();
   const list = document.getElementById('geraete-list');
-  list.innerHTML = '<div class="loading"><div class="spinner"></div>Lade Geräte…</div>';
+  if (!list) return;
 
-  geraeteCache = await apiGet('/api/geraete');
-  const pruefungen = await apiGet('/api/pruefungen');
-
-  let g = geraeteCache;
+  let g = DB.geraete.slice().sort((a, b) => (a.typ || '').localeCompare(b.typ || ''));
   if (q) g = g.filter(x =>
     (x.inventarNr || '').toLowerCase().includes(q) ||
     (x.typ        || '').toLowerCase().includes(q) ||
@@ -265,7 +311,7 @@ async function renderGeraete() {
   }
 
   list.innerHTML = g.map(x => {
-    const gp   = pruefungen.filter(p => p.geraetInventarNr === x.inventarNr);
+    const gp   = DB.pruefungen.filter(p => p.geraetInventarNr === x.inventarNr);
     const last = gp[0];
     let badge  = '<span class="badge neutral">Noch nicht geprüft</span>';
     if (last) badge = `<span class="badge ${last.gesamtergebnis}">${last.gesamtergebnis === 'ok' ? 'Bestanden' : 'Mängel'}</span>`;
@@ -288,15 +334,15 @@ async function renderGeraete() {
   }).join('');
 }
 
-async function openGeraetDetail(invNr) {
-  const g = (geraeteCache || []).find(x => x.inventarNr === invNr);
+function openGeraetDetail(invNr) {
+  const g = DB.geraete.find(x => x.inventarNr === invNr);
   if (!g) return;
   document.getElementById('modal-geraet-title').textContent = `${g.typ} — Inv. ${g.inventarNr || '?'}`;
-  document.getElementById('modal-geraet-body').innerHTML =
-    '<div class="loading"><div class="spinner"></div>Lade Prüfhistorie…</div>';
   document.getElementById('geraet-modal').classList.add('open');
 
-  const pruefungen = await apiGet(`/api/pruefungen?inventarNr=${encodeURIComponent(invNr)}`);
+  const pruefungen = DB.pruefungen
+    .filter(p => p.geraetInventarNr === invNr)
+    .sort((a, b) => (b.datum || '').localeCompare(a.datum || ''));
 
   const stamm = `<div class="card" style="margin-bottom:.75rem">
     <div class="card-title">Stammdaten</div>
@@ -332,8 +378,7 @@ async function openGeraetDetail(invNr) {
     stamm +
     `<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">
       Prüfhistorie (${pruefungen.length})
-    </div>` +
-    histHtml;
+    </div>` + histHtml;
 }
 
 function frow(label, val) {
@@ -345,17 +390,15 @@ function renderPruefDetail(p) {
   const sicht = tryParse(p.sichtJSON, {});
   const mess  = tryParse(p.messJSON,  {});
   const erg   = tryParse(p.ergebnisJSON, {});
-
-  const sOk  = Object.values(sicht).filter(v => v === 'ok').length;
-  const sNok = Object.values(sicht).filter(v => v === 'nok').length;
+  const sOk   = Object.values(sicht).filter(v => v === 'ok').length;
+  const sNok  = Object.values(sicht).filter(v => v === 'nok').length;
 
   const sRows = SICHT_ITEMS.map((item, i) => {
     const v = sicht[i];
     const b = v === 'ok'  ? '<span class="badge ok"  style="font-size:10px;padding:2px 7px">i.O.</span>'
             : v === 'nok' ? '<span class="badge nok" style="font-size:10px;padding:2px 7px">n.i.O.</span>'
             : '<span style="font-size:11px;color:var(--text3)">—</span>';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
-      <span>${item}</span>${b}</div>`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px"><span>${item}</span>${b}</div>`;
   }).join('');
 
   const mRows = MESS_ITEMS.map((item, i) => {
@@ -378,9 +421,8 @@ function renderPruefDetail(p) {
 
   return `
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;font-weight:600;color:var(--text3);margin-bottom:6px">
-        SICHTPRÜFUNG — ${sOk} i.O. / ${sNok} n.i.O.
-      </div>${sRows}
+      <div style="font-size:10px;font-weight:600;color:var(--text3);margin-bottom:6px">SICHTPRÜFUNG — ${sOk} i.O. / ${sNok} n.i.O.</div>
+      ${sRows}
     </div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;font-weight:600;color:var(--text3);margin-bottom:6px">MESSUNG</div>
@@ -388,9 +430,7 @@ function renderPruefDetail(p) {
     </div>
     <div style="margin-bottom:8px;font-size:13px"><strong>Ergebnis:</strong> ${ergTxt}</div>
     ${p.bemerkungen ? `<div style="margin-bottom:8px;font-size:13px"><strong>Bemerkungen:</strong> ${esc(p.bemerkungen)}</div>` : ''}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
-      Prüfer: ${esc(p.pruefer) || '—'} · Messgerät: ${esc(p.messgeraetTyp) || '—'} ${esc(p.messgeraetFabrikat) || ''}
-    </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">Prüfer: ${esc(p.pruefer) || '—'} · Messgerät: ${esc(p.messgeraetTyp) || '—'} ${esc(p.messgeraetFabrikat) || ''}</div>
     ${p.unterschrift ? `<div>
       <div style="font-size:10px;color:var(--text3);margin-bottom:4px;font-weight:600">UNTERSCHRIFT</div>
       <img src="${p.unterschrift}" style="max-width:260px;border:1px solid var(--border);border-radius:var(--r);background:#fff"/>
@@ -407,48 +447,43 @@ async function saveNeuesGeraet() {
   const typ = document.getElementById('ng-typ').value.trim();
   if (!inv || !typ) { toast('Inventar-Nr. und Typ sind Pflichtfelder!'); return; }
 
+  if (DB.geraete.find(x => x.inventarNr === inv)) {
+    document.getElementById('ng-status').innerHTML =
+      '<span style="color:var(--nok)">Diese Inventar-Nr. existiert bereits.</span>';
+    return;
+  }
+
   const btn = document.getElementById('btn-ng');
   btn.disabled = true; btn.textContent = 'Wird gespeichert…';
 
-  try {
-    await apiPost('/api/geraete', {
-      inventarNr:   inv, typ,
-      hersteller:   document.getElementById('ng-hersteller').value,
-      seriennummer: document.getElementById('ng-sn').value,
-      schutzklasse: document.getElementById('ng-sk').value,
-      spannung:     document.getElementById('ng-spannung').value,
-      strom:        document.getElementById('ng-strom').value,
-      leistung:     document.getElementById('ng-leistung').value,
-      standort:     document.getElementById('ng-standort').value,
-      abteilung:    document.getElementById('ng-abt').value,
-      besitzer:     document.getElementById('ng-besitzer').value,
-    });
-    geraeteCache = null;
-    toast('Gerät gespeichert ✓');
-    closeModal('neu-geraet-modal');
-    ['ng-inv','ng-typ','ng-hersteller','ng-sn','ng-spannung',
-     'ng-strom','ng-leistung','ng-standort','ng-abt','ng-besitzer']
-      .forEach(id => document.getElementById(id).value = '');
-    document.getElementById('ng-sk').value = '';
-    document.getElementById('ng-status').innerHTML = '';
-    renderGeraete();
-  } catch (e) {
-    const msg = e.message.includes('bereits vorhanden')
-      ? 'Diese Inventar-Nr. existiert bereits.'
-      : 'Fehler beim Speichern: ' + e.message;
-    document.getElementById('ng-status').innerHTML =
-      `<span style="color:var(--nok)">${msg}</span>`;
-  }
+  DB.geraete.push({
+    id: nextId(DB.geraete), inventarNr: inv, typ,
+    hersteller:   document.getElementById('ng-hersteller').value,
+    seriennummer: document.getElementById('ng-sn').value,
+    schutzklasse: document.getElementById('ng-sk').value,
+    spannung:     document.getElementById('ng-spannung').value,
+    strom:        document.getElementById('ng-strom').value,
+    leistung:     document.getElementById('ng-leistung').value,
+    standort:     document.getElementById('ng-standort').value,
+    abteilung:    document.getElementById('ng-abt').value,
+    besitzer:     document.getElementById('ng-besitzer').value,
+    created_at:   new Date().toISOString(),
+  });
 
+  await saveDB();
+  closeModal('neu-geraet-modal');
+  ['ng-inv','ng-typ','ng-hersteller','ng-sn','ng-spannung',
+   'ng-strom','ng-leistung','ng-standort','ng-abt','ng-besitzer']
+    .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('ng-sk').value = '';
+  document.getElementById('ng-status').innerHTML = '';
   btn.disabled = false; btn.textContent = 'Gerät anlegen';
+  renderGeraete();
 }
 
 // ── Archiv ────────────────────────────────────────────────────────────────────
-async function renderArchiv() {
-  document.getElementById('archiv-list').innerHTML =
-    '<div class="loading"><div class="spinner"></div>Lade…</div>';
-
-  const pruef = await apiGet('/api/pruefungen');
+function renderArchiv() {
+  const pruef = DB.pruefungen.slice().sort((a, b) => (b.datum || '').localeCompare(a.datum || ''));
   document.getElementById('s-total').textContent = pruef.length;
   document.getElementById('s-ok').textContent    = pruef.filter(p => p.gesamtergebnis === 'ok').length;
   document.getElementById('s-nok').textContent   = pruef.filter(p => p.gesamtergebnis === 'nok').length;
@@ -458,7 +493,6 @@ async function renderArchiv() {
     list.innerHTML = '<div class="empty"><div class="icon">📋</div>Noch keine Prüfungen</div>';
     return;
   }
-
   list.innerHTML = pruef.map(p => `
     <div class="list-item">
       <div class="list-icon">📋</div>
@@ -478,8 +512,7 @@ let sigLast    = [0, 0];
 
 function resizeSig() {
   const dpr = window.devicePixelRatio || 1;
-  const w   = sigC.offsetWidth;
-  sigC.width  = w * dpr;
+  sigC.width  = sigC.offsetWidth * dpr;
   sigC.height = 130 * dpr;
   sigX.scale(dpr, dpr);
 }
@@ -492,27 +525,19 @@ function getSigPoint(e) {
   return [s.clientX - r.left, s.clientY - r.top];
 }
 function sigDraw(from, to) {
-  sigX.beginPath();
-  sigX.moveTo(from[0], from[1]);
-  sigX.lineTo(to[0], to[1]);
-  sigX.strokeStyle = '#1a1917';
-  sigX.lineWidth   = 2;
-  sigX.lineCap     = 'round';
-  sigX.stroke();
+  sigX.beginPath(); sigX.moveTo(from[0], from[1]); sigX.lineTo(to[0], to[1]);
+  sigX.strokeStyle = '#1a1917'; sigX.lineWidth = 2; sigX.lineCap = 'round'; sigX.stroke();
 }
-
-sigC.addEventListener('mousedown',  e => { sigDrawing = true; sigLast = getSigPoint(e); });
+sigC.addEventListener('mousedown',  e => { sigDrawing = true;  sigLast = getSigPoint(e); });
 sigC.addEventListener('mousemove',  e => { if (!sigDrawing) return; const p = getSigPoint(e); sigDraw(sigLast, p); sigLast = p; });
 sigC.addEventListener('mouseup',    () => sigDrawing = false);
-sigC.addEventListener('touchstart', e => { e.preventDefault(); sigDrawing = true; sigLast = getSigPoint(e); }, { passive: false });
+sigC.addEventListener('touchstart', e => { e.preventDefault(); sigDrawing = true;  sigLast = getSigPoint(e); }, { passive: false });
 sigC.addEventListener('touchmove',  e => { e.preventDefault(); if (!sigDrawing) return; const p = getSigPoint(e); sigDraw(sigLast, p); sigLast = p; }, { passive: false });
 sigC.addEventListener('touchend',   () => sigDrawing = false);
-
 function clearSig() { sigX.clearRect(0, 0, sigC.width, sigC.height); }
 
 // ── QR Scanner ────────────────────────────────────────────────────────────────
-let qrStream = null;
-let qrAnim   = null;
+let qrStream = null, qrAnim = null;
 
 function openQR() {
   document.getElementById('qr-overlay').classList.add('open');
@@ -520,12 +545,10 @@ function openQR() {
     .then(stream => {
       qrStream = stream;
       const v = document.getElementById('qr-video');
-      v.srcObject = stream; v.play();
-      scanQR();
+      v.srcObject = stream; v.play(); scanQR();
     })
     .catch(() => { toast('Kamerazugriff nicht möglich'); closeQR(); });
 }
-
 function scanQR() {
   const v = document.getElementById('qr-video');
   const c = document.getElementById('qr-canvas');
@@ -534,20 +557,13 @@ function scanQR() {
     if (v.readyState === v.HAVE_ENOUGH_DATA) {
       c.width = v.videoWidth; c.height = v.videoHeight;
       x.drawImage(v, 0, 0);
-      const img  = x.getImageData(0, 0, c.width, c.height);
-      const code = jsQR(img.data, img.width, img.height);
-      if (code) {
-        closeQR();
-        document.getElementById('inv-input').value = code.data;
-        searchGeraet(code.data);
-        return;
-      }
+      const code = jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
+      if (code) { closeQR(); document.getElementById('inv-input').value = code.data; searchGeraet(code.data); return; }
     }
     qrAnim = requestAnimationFrame(tick);
   }
   qrAnim = requestAnimationFrame(tick);
 }
-
 function closeQR() {
   document.getElementById('qr-overlay').classList.remove('open');
   if (qrAnim) cancelAnimationFrame(qrAnim);
@@ -556,22 +572,17 @@ function closeQR() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
 function toast(msg) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
+  t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2800);
 }
-
-function today() { return new Date().toISOString().split('T')[0]; }
-
-function tryParse(s, def) { try { return JSON.parse(s || '{}'); } catch { return def; } }
-
-function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+function today()             { return new Date().toISOString().split('T')[0]; }
+function tryParse(s, def)    { try { return JSON.parse(s || '{}'); } catch { return def; } }
+function esc(s)              { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-document.getElementById('pruefdatum').value = today();
-loadGeraete();
+if (!('showDirectoryPicker' in window)) {
+  document.getElementById('startup-no-support').style.display = 'block';
+  document.getElementById('btn-open-folder').style.display    = 'none';
+}
